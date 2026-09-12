@@ -1,10 +1,8 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-import ollama
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_core.tools import tool
 from tools import query_schedule
 
 # ============ 配置 ============
@@ -35,6 +33,42 @@ vectorstore = Chroma(
 )
 
 
+# ============ LLM 调用（双模式） ============
+def _get_api_key() -> str:
+    """优先从 Streamlit secrets 读，其次环境变量"""
+    try:
+        import streamlit as st
+        return st.secrets["SILICONFLOW_API_KEY"]
+    except Exception:
+        return os.environ.get("SILICONFLOW_API_KEY", "")
+
+
+def _call_llm(prompt: str) -> str:
+    """如果有 API Key 就用云端，否则用本地 Ollama"""
+    api_key = _get_api_key()
+
+    if api_key:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.siliconflow.cn/v1"
+        )
+        response = client.chat.completions.create(
+            model="deepseek-ai/DeepSeek-R1",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.choices[0].message.content
+
+    # 本地 Ollama
+    import ollama
+    response = ollama.chat(
+        model="deepseek-r1:8b",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response["message"]["content"]
+
+
+# ============ 业务逻辑 ============
 def _check_sensitive(text: str) -> bool:
     return any(w in text for w in SENSITIVE_WORDS)
 
@@ -45,19 +79,17 @@ def _retrieve(question: str):
 
 
 def _is_schedule_question(question: str) -> bool:
-    """判断是否是课表问题"""
     keywords = ["课表", "有什么课", "周几", "星期", "周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     return any(k in question for k in keywords)
 
 
 def _extract_day(question: str) -> str:
-    """从问题中提取星期几"""
     for day in ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]:
         if day in question:
             return day
-    # 兼容"星期一"这种写法
     mapping = {"星期一": "周一", "星期二": "周二", "星期三": "周三",
-               "星期四": "周四", "星期五": "周五", "星期六": "周六", "星期日": "周日", "星期天": "周日"}
+               "星期四": "周四", "星期五": "周五", "星期六": "周六",
+               "星期日": "周日", "星期天": "周日"}
     for k, v in mapping.items():
         if k in question:
             return v
@@ -103,12 +135,7 @@ def ask(question: str) -> dict:
 学生问题：{question}
 """
 
-    response = ollama.chat(
-        model="deepseek-r1:8b",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    answer = response["message"]["content"]
-
+    answer = _call_llm(prompt)
     return {"answer": answer, "sources": list(set(sources)), "blocked": False}
 
 

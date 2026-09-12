@@ -1,36 +1,34 @@
 import streamlit as st
-import ollama
+from agent import ask
 
-st.set_page_config(page_title="校园AI助手", page_icon="🎓")
-st.title("🎓 校园AI助手")
+st.set_page_config(page_title="校园教务助手", page_icon="🎓")
+st.title("🎓 校园教务助手")
+st.caption("可提问：学分、专业设置、转专业、学士学位")
 
-# 初始化聊天历史
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 显示历史消息
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# 聊天输入框
-if prompt := st.chat_input("输入你的问题，比如：奖学金怎么申请？"):
+if prompt := st.chat_input("输入你的问题，比如：转专业需要什么条件？"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("思考中..."):
+        with st.spinner("正在检索知识库并生成回答..."):
             try:
-                response = ollama.chat(
-                    model="deepseek-r1:8b",
-                    messages=[
-                        {"role": "system", "content": "你是一个校园助手，用简洁中文回答学生问题。"},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                answer = response["message"]["content"]
+                result = ask(prompt)
+                answer = result["answer"]
+                sources = result["sources"]
             except Exception as e:
-                answer = f"调用模型出错：{e}"
+                answer = f"出错了：{e}"
+                sources = []
+
         st.markdown(answer)
+        if sources:
+            st.caption("来源：" + "、".join(sources))
+
         st.session_state.messages.append({"role": "assistant", "content": answer})

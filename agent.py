@@ -108,7 +108,7 @@ def _build_context(results):
     return "\n\n".join(context_parts), list(set(sources))
 
 
-def ask(question: str) -> dict:
+def ask(question: str, history: list = None) -> dict:
     # 第1层：敏感词
     if _check_sensitive(question):
         return {"answer": REFUSAL_ANSWER, "sources": [], "blocked": True, "reason": "sensitive"}

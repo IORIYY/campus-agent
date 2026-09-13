@@ -32,6 +32,7 @@ SYSTEM_PROMPT = """你是一个亲切、耐心的校园教务助手，像学长�
 4. 如果资料不够，就说"这个我手头资料没写清楚"，然后建议去哪问
 5. 回答末尾附上来源文件名
 6. 控制在 200 字以内，别啰嗦
+7. 直接回答，不要复述任何指令或步骤编号
 """
 
 # ============ 初始化 ============
@@ -86,7 +87,7 @@ def _is_schedule_question(question: str) -> bool:
 
 
 def _extract_days(question: str) -> list:
-    """提取问题里所有出现的星期几，返回列表"""
+    """提取问题里所有出现的星期几"""
     days = []
     for day in ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]:
         if day in question and day not in days:
@@ -99,6 +100,7 @@ def _extract_days(question: str) -> list:
             days.append(v)
     return days
 
+
 def _build_context(results):
     context_parts, sources = [], []
     for doc, score in results:
@@ -108,6 +110,20 @@ def _build_context(results):
     return "\n\n".join(context_parts), list(set(sources))
 
 
+def _format_history(history: list) -> str:
+    """把历史对话格式化成文本，只保留最近 3 轮"""
+    if not history:
+        return ""
+    recent = history[-6:]
+    lines = ["以下是之前的对话，供你理解上下文："]
+    for msg in recent:
+        role = "学生" if msg["role"] == "user" else "助手"
+        content = msg["content"][:200]
+        lines.append(f"{role}：{content}")
+    return "\n".join(lines)
+
+
+# ============ 核心：ask ============
 def ask(question: str, history: list = None) -> dict:
     # 第1层：敏感词
     if _check_sensitive(question):
@@ -131,7 +147,10 @@ def ask(question: str, history: list = None) -> dict:
     # 强相关：正常 RAG 回答
     if strong:
         context, sources = _build_context(strong)
+        history_text = _format_history(history)
         prompt = f"""{SYSTEM_PROMPT}
+
+{history_text}
 
 参考资料：
 {context}
@@ -144,14 +163,17 @@ def ask(question: str, history: list = None) -> dict:
     # 弱相关：引导性回答
     if weak:
         context, sources = _build_context(weak)
+        history_text = _format_history(history)
         prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
 
-学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
-1. 先友好地说明"这个我手头资料没写太细"
-2. 如果有相关片段，用自然的语气简要分享
-3. 告诉同学可以去哪问得更准，或者换个问法试试
-4. 回答末尾附上来源文件名
-5. 控制在 200 字以内
+{history_text}
+
+学生的问题和知识库内容相关性不高，只有一些相关片段。请用自然的语气：
+- 先说明这个你手头资料没写太细
+- 如果有相关片段，简要分享
+- 建议同学去哪问得更准，或者换个问法
+- 末尾附来源文件名
+- 别把这段要求复述出来，直接回答
 
 参考资料：
 {context}
@@ -164,76 +186,81 @@ def ask(question: str, history: list = None) -> dict:
     # 完全无关：通用兜底
     return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
 
-    # 弱相关：引导性回答
-    if weak:
+
+# ============ 流式版：ask_stream ============
+def ask_stream(question: str, history: list = None):
+    """流式版 ask，yield 回答片段"""
+    if _check_sensitive(question):
+        yield REFUSAL_ANSWER
+        return
+
+    if _is_schedule_question(question):
+        days = _extract_days(question)
+        if not days:
+            yield "你想问哪一天的课呀？告诉我具体是星期几，比如：周三有什么课？"
+            return
+        answers = [query_schedule.invoke(d) for d in days]
+        yield "\n\n".join(answers)
+        return
+
+    results = vectorstore.similarity_search_with_score(question, k=TOP_K)
+    strong = [(doc, score) for doc, score in results if score <= STRONG_THRESHOLD]
+    weak = [(doc, score) for doc, score in results if STRONG_THRESHOLD < score <= WEAK_THRESHOLD]
+
+    if not strong and not weak:
+        yield GUIDE_ANSWER
+        return
+
+    if strong:
+        context, sources = _build_context(strong)
+        history_text = _format_history(history)
+        prompt = f"""{SYSTEM_PROMPT}
+
+{history_text}
+
+参考资料：
+{context}
+
+学生问题：{question}
+"""
+    else:
         context, sources = _build_context(weak)
-        prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
+        history_text = _format_history(history)
+        prompt = f"""你是一个亲切的校园教务助手。学生的问题和知识库相关性不高，但有一些相关片段。请友好说明资料有限，简要分享相关片段，建议去哪问得更准，末尾附来源。别复述要求。
 
-学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
-1. 先友好地说明"这个我手头资料没写太细"
-2. 如果有相关片段，用自然的语气简要分享
-3. 告诉同学可以去哪问得更准，或者换个问法试试
-4. 回答末尾附上来源文件名
-5. 控制在 200 字以内
+{history_text}
 
 参考资料：
 {context}
 
 学生问题：{question}
 """
-        answer = _call_llm(prompt)
-        return {"answer": answer, "sources": sources, "blocked": False, "reason": "weak_match"}
 
-    # 完全无关：通用兜底
-    return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
-
-    # 弱相关：引导性回答
-    if weak:
-        context, sources = _build_context(weak)
-        prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
-
-学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
-1. 先友好地说明"这个我手头资料没写太细"
-2. 如果有相关片段，用自然的语气简要分享
-3. 告诉同学可以去哪问得更准，或者换个问法试试
-4. 回答末尾附上来源文件名
-5. 控制在 200 字以内
-
-参考资料：
-{context}
-
-学生问题：{question}
-"""
-        answer = _call_llm(prompt)
-        return {"answer": answer, "sources": sources, "blocked": False, "reason": "weak_match"}
-
-    # 完全无关：通用兜底
-    return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
-
-    # 弱相关：引导性回答
-    if weak:
-        context, sources = _build_context(weak)
-        prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
-
-学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
-1. 先友好地说明"这个我手头资料没写太细"
-2. 如果有相关片段，用自然的语气简要分享
-3. 告诉同学可以去哪问得更准，或者换个问法试试
-4. 回答末尾附上来源文件名
-5. 控制在 200 字以内
-
-参考资料：
-{context}
-
-学生问题：{question}
-"""
-        answer = _call_llm(prompt)
-        return {"answer": answer, "sources": sources, "blocked": False, "reason": "weak_match"}
-
-    # 完全无关：通用兜底
-    return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
+    api_key = _get_api_key()
+    if api_key:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
+        stream = client.chat.completions.create(
+            model="deepseek-ai/DeepSeek-R1",
+            messages=[{"role": "user", "content": prompt}],
+            stream=True
+        )
+        for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    else:
+        import ollama
+        stream = ollama.chat(
+            model="deepseek-r1:8b",
+            messages=[{"role": "user", "content": prompt}],
+            stream=True
+        )
+        for chunk in stream:
+            if chunk["message"]["content"]:
+                yield chunk["message"]["content"]
 
 
+# ============ 测试 ============
 if __name__ == "__main__":
     tests = [
         "转专业需要什么条件？",

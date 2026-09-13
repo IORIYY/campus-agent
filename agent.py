@@ -85,18 +85,19 @@ def _is_schedule_question(question: str) -> bool:
     return any(k in question for k in keywords)
 
 
-def _extract_day(question: str) -> str:
+def _extract_days(question: str) -> list:
+    """提取问题里所有出现的星期几，返回列表"""
+    days = []
     for day in ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]:
-        if day in question:
-            return day
+        if day in question and day not in days:
+            days.append(day)
     mapping = {"星期一": "周一", "星期二": "周二", "星期三": "周三",
                "星期四": "周四", "星期五": "周五", "星期六": "周六",
                "星期日": "周日", "星期天": "周日"}
     for k, v in mapping.items():
-        if k in question:
-            return v
-    return ""
-
+        if k in question and v not in days:
+            days.append(v)
+    return days
 
 def _build_context(results):
     context_parts, sources = [], []
@@ -114,11 +115,12 @@ def ask(question: str) -> dict:
 
     # 课表问题走工具
     if _is_schedule_question(question):
-        day = _extract_day(question)
-        if not day:
+        days = _extract_days(question)
+        if not days:
             return {"answer": "你想问哪一天的课呀？告诉我具体是星期几，比如：周三有什么课？",
                     "sources": ["schedule.db"], "blocked": False, "reason": "need_day"}
-        return {"answer": query_schedule.invoke(day),
+        answers = [query_schedule.invoke(d) for d in days]
+        return {"answer": "\n\n".join(answers),
                 "sources": ["schedule.db"], "blocked": False}
 
     # 检索
@@ -138,6 +140,75 @@ def ask(question: str) -> dict:
 """
         answer = _call_llm(prompt)
         return {"answer": answer, "sources": sources, "blocked": False}
+
+    # 弱相关：引导性回答
+    if weak:
+        context, sources = _build_context(weak)
+        prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
+
+学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
+1. 先友好地说明"这个我手头资料没写太细"
+2. 如果有相关片段，用自然的语气简要分享
+3. 告诉同学可以去哪问得更准，或者换个问法试试
+4. 回答末尾附上来源文件名
+5. 控制在 200 字以内
+
+参考资料：
+{context}
+
+学生问题：{question}
+"""
+        answer = _call_llm(prompt)
+        return {"answer": answer, "sources": sources, "blocked": False, "reason": "weak_match"}
+
+    # 完全无关：通用兜底
+    return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
+
+    # 弱相关：引导性回答
+    if weak:
+        context, sources = _build_context(weak)
+        prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
+
+学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
+1. 先友好地说明"这个我手头资料没写太细"
+2. 如果有相关片段，用自然的语气简要分享
+3. 告诉同学可以去哪问得更准，或者换个问法试试
+4. 回答末尾附上来源文件名
+5. 控制在 200 字以内
+
+参考资料：
+{context}
+
+学生问题：{question}
+"""
+        answer = _call_llm(prompt)
+        return {"answer": answer, "sources": sources, "blocked": False, "reason": "weak_match"}
+
+    # 完全无关：通用兜底
+    return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
+
+    # 弱相关：引导性回答
+    if weak:
+        context, sources = _build_context(weak)
+        prompt = f"""你是一个亲切的校园教务助手，像学长学姐一样帮同学解答问题。
+
+学生的问题和知识库内容相关性不高，但有一些相关片段。请这样回答：
+1. 先友好地说明"这个我手头资料没写太细"
+2. 如果有相关片段，用自然的语气简要分享
+3. 告诉同学可以去哪问得更准，或者换个问法试试
+4. 回答末尾附上来源文件名
+5. 控制在 200 字以内
+
+参考资料：
+{context}
+
+学生问题：{question}
+"""
+        answer = _call_llm(prompt)
+        return {"answer": answer, "sources": sources, "blocked": False, "reason": "weak_match"}
+
+    # 完全无关：通用兜底
+    return {"answer": GUIDE_ANSWER, "sources": [], "blocked": False, "reason": "out_of_scope"}
 
     # 弱相关：引导性回答
     if weak:
